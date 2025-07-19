@@ -1,0 +1,27 @@
+[project]
+name = "chiral_mols"
+version = "0.1.0"
+description = ""
+authors = [
+    { name = "Steffen Wedig", email = "snw30@cam.ac.uk" },
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.5.1",
+    "ase>=3.24.0",
+    "rdkit>=2024.9.4",
+    "mace-torch",
+    "numpy>=2.2"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+select = ["I", "UP", "F", "E", "W", "C90", "B", "A", "RUF"]
+ignore = ["E501", "B008"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chiral_mols"]
