@@ -1,5 +1,5 @@
 from rdkit import Chem
-from chiral_mols.create_dataset import chirality_codes
+from chiral_mols.data.create_dataset import chirality_codes
 
 
 def test_achiral_molecule():

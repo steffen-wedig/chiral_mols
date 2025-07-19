@@ -3,10 +3,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from chiral_mols.structure_id import StructureID
-from chiral_mols.ptr_dataset import PtrMoleculeDataset
+from chiral_mols.data.structure_id import StructureID
+from chiral_mols.data.ptr_dataset import PtrMoleculeDataset
 from torch.utils.data import DataLoader
-from chiral_mols.sample import ptr_collate, Sample
+from chiral_mols.data.sample import ptr_collate
 from typing import Tuple
 
 

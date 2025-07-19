@@ -1,5 +1,4 @@
-import pytest
-from chiral_mols.create_dataset import (
+from chiral_mols.data.create_dataset import (
     StructureID,
     select_mols_with_complete_enantiomer,
     get_structures_from_mol_id,
