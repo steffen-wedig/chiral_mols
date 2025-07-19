@@ -1,8 +1,9 @@
 from chiral_mols.data.create_dataset import (
-    StructureID,
     select_mols_with_complete_enantiomer,
     get_structures_from_mol_id,
 )
+
+from chiral_mols.data.structure_id import StructureID
 
 
 def test_select_mols_with_complete_enantiomer_empty():
