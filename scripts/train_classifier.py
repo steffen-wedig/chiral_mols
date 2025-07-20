@@ -1,4 +1,3 @@
-
 import warnings
 
 
@@ -11,7 +10,7 @@ import torch
 from chiral_mols.data.ptr_dataset import PtrMoleculeDataset
 from chiral_mols.training.dataset_splitting import DatasetSplitter
 from torch.utils.data import DataLoader, Subset
-from chiral_mols.training.traininig_config import TrainConfig
+from chiral_mols.training.training_config import TrainConfig
 from chiral_mols.data.sample import ptr_collate_padding, concat_collate
 from chiral_mols.training.embedding_normalization import get_mean_std_invariant_indices
 from pathlib import Path
@@ -20,13 +19,33 @@ from chiral_mols.model.chiral_embedding_model import ChiralEmbeddingModel
 from chiral_mols.model.classifier import ChiralityClassifier
 from torch.optim import AdamW
 from torch.nn import CrossEntropyLoss
+from chiral_mols.training.evaluation import build_metric_collection, wandb_confmat
+from chiral_mols.training.training import train_one_epoch, evaluate, parse_args
+from chiral_mols.training.loss import get_class_weights, FocalLoss
+from torch.optim.lr_scheduler import OneCycleLR
+
+import wandb
+
+
+run_name = parse_args()
+torch.manual_seed(0)
+
 
 dataset_dir = Path("/share/snw30/projects/chiral_mols/dataset/chiral_atoms")
 
 
-training_cfg = TrainConfig(batch_size=6,learning_rate=1e-4, N_epochs= 100)
-chiral_embedding_dim = 32 # Linear Projection from Pseudosclars to dim.
+training_cfg = TrainConfig(batch_size=64, learning_rate=1e-4, N_epochs=250)
+chiral_embedding_dim = 64  # Linear Projection from Pseudosclars to dim.
 N_classes = 3
+
+
+wandb.init(
+    project="chirality_prediction",
+    entity="threedscriptors",
+    name=run_name,
+    config=training_cfg,
+)
+
 
 input_irreps = Irreps("128x0e+128x1o+128x0e")
 
@@ -39,79 +58,105 @@ train_idx, val_idx = dataset_splitting.random_split_by_molecule(
 train_data = Subset(dataset, train_idx)
 val_data = Subset(dataset, val_idx)
 
-train_data_loader = DataLoader(train_data, batch_size= training_cfg.batch_size, collate_fn=concat_collate, shuffle=True,drop_last=True)
-val_data_loader = DataLoader(val_data,batch_size = training_cfg.batch_size, collate_fn=concat_collate)
+train_data_loader = DataLoader(
+    train_data,
+    batch_size=training_cfg.batch_size,
+    collate_fn=concat_collate,
+    shuffle=True,
+    drop_last=True,
+)
+val_data_loader = DataLoader(
+    val_data, batch_size=training_cfg.batch_size, collate_fn=concat_collate
+)
 
-mean_inv, std_inv = get_mean_std_invariant_indices(train_data.dataset.embeddings, input_irreps)
-
-
-chiral_embedding_model = ChiralEmbeddingModel(input_irreps=input_irreps, pseudoscalar_irreps= Irreps("128x0o"), output_embedding_dim=32, mean_inv_atomic_embedding= mean_inv, std_inv_atomic_embedding= std_inv)
-
-classifier = ChiralityClassifier(chiral_embedding_dim=chiral_embedding_dim, hidden_dim= 64, n_classes = N_classes, dropout=0.1)
-
-loss_fn = CrossEntropyLoss()
-optimizer = AdamW(params = list(classifier.parameters())+ list(chiral_embedding_model.parameters()), lr = training_cfg.learning_rate )
+mean_inv, std_inv = get_mean_std_invariant_indices(
+    train_data.dataset.embeddings, input_irreps
+)
 
 device = "cuda"
+
+chiral_embedding_model = ChiralEmbeddingModel(
+    input_irreps=input_irreps,
+    pseudoscalar_irreps=Irreps("64x0o"),
+    output_embedding_dim=chiral_embedding_dim,
+    mean_inv_atomic_embedding=mean_inv,
+    std_inv_atomic_embedding=std_inv,
+    low_dim_equivariant=64
+)
+
+classifier = ChiralityClassifier(
+    chiral_embedding_dim=chiral_embedding_dim,
+    hidden_dim=256,
+    n_classes=N_classes,
+    dropout=0.3,
+)
+
+
+weights = get_class_weights(train_data.dataset, num_classes=3, scheme="balanced")
+#loss_fn = CrossEntropyLoss(weight=weights.to(device=device))
+loss_fn = FocalLoss(gamma=2.0, alpha= weights, reduction="mean").to(device)
+
+
+optimizer = AdamW(
+    params=list(classifier.parameters()) + list(chiral_embedding_model.parameters()),
+    lr=training_cfg.learning_rate,
+)
+
+
+total_steps = training_cfg.N_epochs * len(train_data_loader)
+
+# 3. Instantiate the OneCycleLR scheduler
+scheduler = OneCycleLR(
+    optimizer,
+    max_lr=training_cfg.learning_rate,   # peak learning rate
+    total_steps=total_steps,             # total number of optimizer steps
+    pct_start=0.3,                       # fraction of cycle spent increasing LR
+    anneal_strategy='cos',              # cosine annealing (other option: 'linear')
+    div_factor=25.0,                     # initial lr = max_lr/div_factor
+    final_div_factor=1e4,                # final lr = initial_lr/final_div_factor
+    three_phase=False,                   # set True for 3-phase schedule
+    last_epoch=-1,                       # leave as default unless resuming
+)
+
 classifier.to(device)
 chiral_embedding_model.to(device)
 
-for epoch in range(1, training_cfg.N_epochs+1):
 
-    classifier.train()
-    chiral_embedding_model.train()
+metrics = build_metric_collection(N_classes).to(device=device)
 
+for epoch in range(1, training_cfg.N_epochs + 1):
+
+    train_loss = train_one_epoch(
+        chiral_embedding_model,
+        classifier,
+        train_data_loader,
+        loss_fn,
+        optimizer,
+        scheduler,
+        device,
+    )
+
+    val_stats = evaluate(
+        chiral_embedding_model,
+        classifier,
+        val_data_loader,
+        metrics,
+        loss_fn,
+        device,
+    )
+
+    print(f"\nEpoch {epoch}")
+    print(f"  train_loss         : {train_loss:.4f}")
+    for k, v in val_stats.items():
+        if k != "confmat":
+            print(f"  {k:18s}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
+    print("  confusion matrix:\n", val_stats["confmat"].numpy())
     
-    
-    #train loop 
-    accumulated_train_loss = 0.0
-    for batch in train_data_loader:
-        batch = batch.to_(device = device)
-
-        optimizer.zero_grad()
-        chiral_embedding = chiral_embedding_model(batch.embeddings)
-
-        chiral_logits = classifier(chiral_embedding)
-
-        loss = loss_fn(chiral_logits, batch.chirality_labels)
-
-        loss.backward()
-        optimizer.step()
-        accumulated_train_loss += loss.item()
-     
-
-    
-    # val loop
-    with torch.no_grad():
-
-        classifier.eval()
-        chiral_embedding_model.eval()
-        accumulated_val_loss = 0.0
-
-        for batch in val_data_loader:
-            batch.to_(device = device)
-            chiral_embedding = chiral_embedding_model(batch.embeddings)
-
-            chiral_logits = classifier(chiral_embedding)
-
-            loss = loss_fn(chiral_logits, batch.chirality_labels)
-
-            accumulated_val_loss += loss.item()
-
-
-    print(f"Epoch: {epoch}. Train Loss: {accumulated_train_loss/len(train_data_loader)}, Validation Loss {accumulated_val_loss/len(val_data_loader)}")
-
-    
-
-
-
-
-# evaluation
-
-# Mainly focus on the correct identification of chiral centers
-
-
-
-
-
-
+    wandb.log(
+        {
+            "epoch": epoch,
+            "train/loss": train_loss,
+            **{f"val/{k}": v for k, v in val_stats.items() if k != "confmat"},
+            "val/confmat": wandb_confmat(val_stats["confmat"]),
+        }
+    )

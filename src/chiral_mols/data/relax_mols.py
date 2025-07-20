@@ -3,7 +3,7 @@ from rdkit import Chem
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 from typing import List
-
+from rdkit.Chem import rdmolops
 from rdkit.Chem import AllChem
 
 
@@ -19,24 +19,33 @@ def _process_one_smiles(args):
     params.useRandomCoords = False
 
     # 0) Parse & add Hs
-    mol = Chem.MolFromSmiles(smiles)
-
+    mol = Chem.MolFromSmiles(smiles, sanitize=False)
+    try:
+        # this will raise a Chem.SanitizeException on any failure
+        rdmolops.SanitizeMol(mol, catchErrors=False)
+    except Exception as e:
+        raise ValueError(f"Sanitization failed for '{smiles}': {e}")
     if mol is None:
         warnings.append(f"SMILES '{smiles}' could not be parsed; skipped.")
-        return None , warnings
-    
+        return None, warnings
+
     mol = Chem.AddHs(mol)
 
     try:
         # 3) Embed multiple conformers
+
         conf_ids = AllChem.EmbedMultipleConfs(mol, N_conformers, params)
 
         if not conf_ids:
             raise ValueError(f"Embedding failed for SMILES '{smiles}'")
 
+        mmff_props = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant="MMFF94s")
+        if mmff_props is None:
+            raise ValueError(f"MMFF parameters not available for SMILES '{smiles}'")
+
         # 4) MMFF optimize & get convergence flags
         results = AllChem.MMFFOptimizeMoleculeConfs(
-            mol, maxIters=500, nonBondedThresh=500.0, numThreads=1
+            mol, maxIters=500, nonBondedThresh=500.0, numThreads=1, mmffVariant = "MMFF94s"
         )
 
         for i, (flag, E) in enumerate(results):
@@ -44,8 +53,13 @@ def _process_one_smiles(args):
                 warnings.append(
                     f"SMILES '{smiles}', conformer {i}: MMFF did not converge."
                 )
+                mol.RemoveConformer(i)
 
+                if mol.GetNumConformers() == 0:
+                    raise ValueError
+                
         return mol, warnings
+
 
     except Exception as e:
         warnings.append(f"SMILES '{smiles}': unexpected error {e!r}")
@@ -57,7 +71,7 @@ def convert_smiles_to_mols(
     N_conformers: int = 1,
     n_workers: int | None = None,
     verbose: bool = True,
-)-> List[Chem.Mol]:
+) -> List[Chem.Mol]:
     """Parallel version that filters out unconverged conformers."""
     if n_workers is None:
         n_workers = max(1, cpu_count() - 1)
@@ -72,6 +86,7 @@ def convert_smiles_to_mols(
             total=len(jobs),
             desc="SMILES → ASE",
             disable=not verbose,
+            leave=False
         ):
             if verbose:
                 for w in warnings:
@@ -81,7 +96,7 @@ def convert_smiles_to_mols(
 
     dt = time.time() - t0
     if verbose:
-        print(
+        tqdm.write(
             f"Processed {len(smiles_list)} SMILES → {len(all_mols)} converged conformers in {dt:.1f}s"
         )
     return all_mols

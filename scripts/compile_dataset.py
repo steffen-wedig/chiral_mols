@@ -14,13 +14,13 @@ from chiral_mols.data.ptr_dataset import PtrMoleculeDataset
 
 MACE_PATH = "/share/snw30/projects/mace_model/MACE-OFF24_medium.model"
 TSV_FILE = "/share/snw30/projects/threedscriptor/3DMolecularDescriptors/data/raw_data/BindingDB_All.tsv"
-DATASET_DIR = "/share/snw30/projects/chiral_mols/data/chiral_atoms/"
+DATASET_DIR = "/share/snw30/projects/chiral_mols/dataset/chiral_atoms/"
 
 
 def main():
 
     all_mols = []
-    N_molecules = 100
+    N_molecules = 10000
 
     seen_smiles = set()
     with tqdm(total=N_molecules) as pbar:
@@ -35,7 +35,7 @@ def main():
             smiles = [s for s in smiles if s not in seen_smiles]
             seen_smiles.update(smiles)
 
-            new_mols = convert_smiles_to_mols(smiles, N_conformers=1, verbose=False)
+            new_mols = convert_smiles_to_mols(smiles, N_conformers=5, verbose=True)
 
             pbar.update(len(new_mols))
             if new_mols is not []:
@@ -50,13 +50,6 @@ def main():
         all_mols
     )
 
-    mol_id_counts = {}
-    for sid in all_structure_ids:
-        mol_id_counts[sid.MoleculeID] = mol_id_counts.get(sid.MoleculeID, 0) + 1
-
-    assert all(
-        count == 2 for count in mol_id_counts.values()
-    ), "Each molecule ID must appear exactly twice"
 
     mace_calc = MACECalculator(model_paths=MACE_PATH, enable_cueq=True, device="cuda")
     all_mace_embeddings = get_mace_embeddings(atoms=all_atoms, mace_calc=mace_calc)

@@ -97,6 +97,11 @@ def get_chiral_smiles(smiles : list[str]):
             continue
         if mol2.GetNumAtoms() > 47:
             continue
+
+
+        if len(Chem.GetMolFrags(mol, asMols=True)) > 1:
+            continue
+
         if any(
             a.GetNumRadicalElectrons() != 0
             or a.GetIsotope() != 0

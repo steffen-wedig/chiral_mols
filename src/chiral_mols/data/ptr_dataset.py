@@ -45,6 +45,9 @@ class PtrMoleculeDataset(Dataset):
         """Return ``slice`` covering molecule *idx* in the flat tensors."""
         return slice(self.ptr[idx].item(), self.ptr[idx + 1].item())
 
+
+
+
     @classmethod
     def from_dataset_list(
         cls,

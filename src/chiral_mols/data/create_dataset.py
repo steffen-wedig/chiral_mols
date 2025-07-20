@@ -2,6 +2,9 @@ from rdkit import Chem
 from ase import Atoms
 from typing import List, Tuple
 from chiral_mols.data.structure_id import StructureID
+from collections import defaultdict
+from typing import List, Tuple
+from itertools import chain
 
 
 def chirality_codes(mol: Chem.Mol) -> list[int]:
@@ -48,7 +51,7 @@ def process_single_mol(mol: Chem.Mol):
 
 def get_enantionmer_id(atom_chirality : List[List[int]]) -> int:
 
-    c = set(*atom_chirality)
+    c = set(chain.from_iterable(atom_chirality))
     if 1 in c and 2 in c:
         raise ValueError("Both R/S in mol")
     elif 1 in c:
@@ -112,7 +115,11 @@ def convert_mols_to_dataset(all_mols: List[Chem.Mol]) -> Tuple[List[StructureID]
             molecule_id = len(non_isomeric_smiles_set.keys())
             non_isomeric_smiles_set[non_isomeric_smi] = molecule_id
 
-        enantiomer_id = get_enantionmer_id(atom_chirality)
+
+        try:
+            enantiomer_id = get_enantionmer_id(atom_chirality)
+        except ValueError:
+            continue
 
         structure_ids = [
             StructureID(
@@ -133,7 +140,53 @@ def convert_mols_to_dataset(all_mols: List[Chem.Mol]) -> Tuple[List[StructureID]
         list(non_isomeric_smiles_set.values())
     )  # Asserts mol id uniqueness
 
+
+    all_structure_ids, all_atoms, all_chirality_labels = prune_single_mols(all_structure_ids, all_atoms, all_chirality_labels)
+
+
     assert len(all_atoms) == len(all_structure_ids)
     assert len(all_atoms) == len(all_chirality_labels)
+
+    return all_structure_ids, all_atoms, all_chirality_labels
+
+
+
+def prune_single_mols(all_structure_ids, all_atoms, all_chirality_labels):
+
+
+    # ------------------------------------------------------------------
+    # Find MoleculeIDs that have *both* enantiomers
+    # ------------------------------------------------------------------
+    mol_to_enants = defaultdict(set)
+    for sid in all_structure_ids:
+        mol_to_enants[sid.MoleculeID].add(sid.EnantiomerID)
+
+    valid_mol_ids = {mid for mid, en_set in mol_to_enants.items() if en_set == {1, 2}}
+
+    # ------------------------------------------------------------------
+    # Prune everything else
+    # ------------------------------------------------------------------
+    keep_idx = [
+        idx for idx, sid in enumerate(all_structure_ids) if sid.MoleculeID in valid_mol_ids
+    ]
+
+    # Filter the parallel lists
+    all_structure_ids = [all_structure_ids[i] for i in keep_idx]
+    all_atoms          = [all_atoms[i]          for i in keep_idx]
+    all_chirality_labels = [all_chirality_labels[i] for i in keep_idx]
+
+    # (optional) re‑number StructureID.StructureID so they’re consecutive again
+    for new_id, sid in enumerate(all_structure_ids):
+        all_structure_ids[new_id] = StructureID(
+            StructureID=new_id,
+            MoleculeID=sid.MoleculeID,
+            EnantiomerID=sid.EnantiomerID,
+            ConformerID=sid.ConformerID,
+        )
+
+    # ------------------------------------------------------------------
+    # Integrity checks
+    # ------------------------------------------------------------------
+    assert len(all_atoms) == len(all_structure_ids) == len(all_chirality_labels)
 
     return all_structure_ids, all_atoms, all_chirality_labels

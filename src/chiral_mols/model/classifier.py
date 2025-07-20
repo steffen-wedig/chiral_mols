@@ -17,7 +17,10 @@ class ChiralityClassifier(nn.Module):
         # Simple 2‐layer MLP
         self.net = nn.Sequential(
             nn.Linear(chiral_embedding_dim, hidden_dim),
-            nn.ReLU(inplace=True),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, n_classes),
         )
