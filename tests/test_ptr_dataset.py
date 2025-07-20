@@ -6,7 +6,7 @@ import torch
 from chiral_mols.data.structure_id import StructureID
 from chiral_mols.data.ptr_dataset import PtrMoleculeDataset
 from torch.utils.data import DataLoader
-from chiral_mols.data.sample import ptr_collate
+from chiral_mols.data.sample import ptr_collate_padding, concat_collate
 from typing import Tuple
 
 
@@ -49,7 +49,7 @@ def test_round_trip(tmp_path: Path, random_dataset):
 
 def test_collate_padding(random_dataset):
     dataset, lengths = random_dataset
-    loader = DataLoader(dataset, batch_size=len(dataset), collate_fn=ptr_collate, shuffle=False)
+    loader = DataLoader(dataset, batch_size=len(dataset), collate_fn=ptr_collate_padding, shuffle=False)
     batch = next(iter(loader))
     B = len(dataset)
     max_n = max(lengths)
@@ -77,3 +77,57 @@ def test_sample_to_(random_dataset):
     assert sample.chirality_labels.device == cpu
     if sample.atom_mask is not None:
         assert sample.atom_mask.device == cpu
+
+
+
+
+def test_concat_collate_shapes_and_content(random_dataset):
+    """
+    Given a list of `Sample`s (one per molecule) concat_collate should:
+        • concatenate atoms along dim=0
+        • keep feature dim (F) unchanged
+        • produce a 1-D chirality label tensor
+        • produce a mol_idx tensor whose unique values are 0…B-1
+          and appear in contiguous blocks (no interleaving)
+    """
+    dataset, lengths = random_dataset                       # fixture output
+    molecules = [dataset[i] for i in range(len(dataset))]   # list[Sample]
+
+    flat = concat_collate(molecules)                        # Forward
+
+    # ---------- basic shape checks ----------
+    n_total = int(np.sum(lengths))
+    F = molecules[0].embeddings.shape[1]
+
+    assert flat.embeddings.shape == (n_total, F)
+    assert flat.chirality_labels.shape == (n_total,)
+    assert flat.mol_idx.shape == (n_total,)
+
+    # ---------- mol_idx should cover 0 … B‑1 ----------
+    unique_ids = flat.mol_idx.unique(sorted=True)
+    assert torch.equal(unique_ids, torch.arange(len(lengths)))
+
+    # ---------- mol_idx should be piecewise‑constant blocks ----------
+    # (diff == 0 inside a molecule, 1 at the boundary ➜ exactly B‑1 jumps)
+    jumps = (flat.mol_idx[1:] - flat.mol_idx[:-1]).nonzero(as_tuple=False)
+    assert jumps.numel() == len(lengths) - 1
+
+    # ---------- content equality ----------
+    cursor = 0
+    for mol_id, sample in enumerate(molecules):
+        n = sample.embeddings.shape[0]
+
+        # embeddings and labels match exactly
+        assert torch.allclose(
+            flat.embeddings[cursor : cursor + n], sample.embeddings
+        )
+        assert torch.equal(
+            flat.chirality_labels[cursor : cursor + n], sample.chirality_labels
+        )
+
+        # mol_idx correctly filled
+        assert torch.equal(
+            flat.mol_idx[cursor : cursor + n],
+            torch.full((n,), mol_id, dtype=flat.mol_idx.dtype),
+        )
+        cursor += n
