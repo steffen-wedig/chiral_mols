@@ -27,15 +27,12 @@ from torch.optim.lr_scheduler import OneCycleLR
 import wandb
 
 
-run_name = parse_args()
 torch.manual_seed(0)
 
 
 dataset_dir = Path("/share/snw30/projects/chiral_mols/dataset/chiral_atoms")
 
 
-training_cfg = TrainConfig(batch_size=256, learning_rate=5e-4, N_epochs=50)
-chiral_embedding_dim = 64  # Linear Projection from Pseudosclars to dim.
 N_classes = 3
 
 
@@ -44,27 +41,15 @@ input_irreps = Irreps("128x0e+128x1o+128x0e")
 
 dataset = PtrMoleculeDataset.reload_dataset_from_dir(dataset_dir)
 print("Loaded the dataset")
-dataset_splitting = DatasetSplitter(dataset.structure_ids)
-train_idx, val_idx = dataset_splitting.random_split_by_molecule(
-    train_val_ratios=[0.7, 0.3]
-)
-train_data = Subset(dataset, train_idx)
-val_data = Subset(dataset, val_idx)
 
-train_data_loader = DataLoader(
-    train_data,
-    batch_size=training_cfg.batch_size,
+
+
+datloader = DataLoader(
+    dataset,
+    batch_size=1024,
     collate_fn=concat_collate,
-    shuffle=True,
-    drop_last=True,
-)
-val_data_loader = DataLoader(
-    val_data, batch_size=training_cfg.batch_size, collate_fn=concat_collate
 )
 
-mean_inv, std_inv = get_mean_std_invariant_indices(
-    train_data.dataset.embeddings, input_irreps
-)
 
 device = "cuda"
 
@@ -85,16 +70,6 @@ classifier = ChiralityClassifier(
 )
 
 
-weights = get_class_weights(train_data.dataset, num_classes=3, scheme="balanced")
-#loss_fn = CrossEntropyLoss(weight=weights.to(device=device))
-loss_fn = FocalLoss(gamma=2.0, alpha= weights, reduction="mean").to(device)
-
-
-optimizer = AdamW(
-    params=list(classifier.parameters()) + list(chiral_embedding_model.parameters()),
-    lr=training_cfg.learning_rate,
-)
-
 
 total_steps = training_cfg.N_epochs * len(train_data_loader)
 
@@ -110,15 +85,6 @@ scheduler = OneCycleLR(
     three_phase=False,                   # set True for 3-phase schedule
     last_epoch=-1,                       # leave as default unless resuming
 )
-
-
-wandb.init(
-    project="chirality_prediction",
-    entity="threedscriptors",
-    name=run_name,
-    config=training_cfg,
-)
-
 
 
 classifier.to(device)
