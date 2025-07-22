@@ -3,3 +3,5 @@ __pycache__
 .vscode
 dataset/
 wandb/
+models/
+training_runs

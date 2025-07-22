@@ -1,4 +1,5 @@
 from rdkit import Chem
+from rdkit.Chem import AllChem
 from ase import Atoms
 from typing import List, Tuple
 from chiral_mols.data.structure_id import StructureID
@@ -190,3 +191,21 @@ def prune_single_mols(all_structure_ids, all_atoms, all_chirality_labels):
     assert len(all_atoms) == len(all_structure_ids) == len(all_chirality_labels)
 
     return all_structure_ids, all_atoms, all_chirality_labels
+
+
+
+def get_ase_atoms(smiles) -> Atoms:
+    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(mol)
+    AllChem.EmbedMolecule(
+        mol, useBasicKnowledge=True, useExpTorsionAnglePrefs=True, randomSeed=-1
+    )
+
+    symbols = [atom.GetSymbol() for atom in mol.GetAtoms()]
+
+    # one ASE Atoms object per conformer
+    atoms = Atoms(symbols=symbols, positions=mol.GetConformer().GetPositions(), pbc=False, info = {"smiles" : Chem.MolToSmiles(mol,allHsExplicit=False)})
+    
+    
+
+    return atoms

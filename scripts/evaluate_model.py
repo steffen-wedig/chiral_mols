@@ -23,7 +23,8 @@ from chiral_mols.training.evaluation import build_metric_collection, wandb_confm
 from chiral_mols.training.training import train_one_epoch, evaluate, parse_args
 from chiral_mols.training.loss import get_class_weights, FocalLoss
 from torch.optim.lr_scheduler import OneCycleLR
-
+from chiral_mols.model.configuration import ChiralEmbeddingConfig, ChiralityClassifierConfig
+import pydantic_yaml as pydyaml
 import wandb
 
 
@@ -31,60 +32,47 @@ torch.manual_seed(0)
 
 
 dataset_dir = Path("/share/snw30/projects/chiral_mols/dataset/chiral_atoms")
-
-
 N_classes = 3
-
-
-input_irreps = Irreps("128x0e+128x1o+128x0e")
-
 
 dataset = PtrMoleculeDataset.reload_dataset_from_dir(dataset_dir)
 print("Loaded the dataset")
 
-
-
-datloader = DataLoader(
+dataloader = DataLoader(
     dataset,
     batch_size=1024,
     collate_fn=concat_collate,
 )
-
+model_dir = Path("/share/snw30/projects/chiral_mols/training_runs/3-2025_07_22_18_54_40-CEDim=24")
 
 device = "cuda"
 
+classifier_config = pydyaml.parse_yaml_file_as(ChiralityClassifierConfig, file = model_dir / "classifier_config.yaml")
+chiral_embedding_model_config = pydyaml.parse_yaml_file_as(ChiralEmbeddingConfig, file = model_dir / "chiral_embedding_model_config.yaml")
+
+
 chiral_embedding_model = ChiralEmbeddingModel(
-    input_irreps=input_irreps,
-    pseudoscalar_irreps=Irreps("64x0o"),
-    output_embedding_dim=chiral_embedding_dim,
-    mean_inv_atomic_embedding=mean_inv,
-    std_inv_atomic_embedding=std_inv,
-    low_dim_equivariant=64
+    **chiral_embedding_model_config.model_dump(exclude="reload_state_dict"),
+    mean_inv_atomic_embedding=None,
+    std_inv_atomic_embedding=None,
+    dtype=torch.float32,
 )
 
-classifier = ChiralityClassifier(
-    chiral_embedding_dim=chiral_embedding_dim,
-    hidden_dim=256,
-    n_classes=N_classes,
-    dropout=0.3,
+classifier = ChiralityClassifier(**classifier_config.model_dump(exclude = "reload_state_dict"))
+classifier.load_state_dict(torch.load(classifier_config.reload_state_dict))
+
+
+state_dict = torch.load(chiral_embedding_model_config.reload_state_dict)
+chiral_embedding_model.load_state_dict(state_dict)
+
+
+loss_fn_params = torch.load(model_dir / "focal_loss_state.pth", map_location=device)
+
+loss_fn = FocalLoss(                      # create shell with any values that
+    gamma=loss_fn_params["gamma"], alpha=None,                # will be overwritten by load_state_dict
+    reduction=loss_fn_params["reduction"]
 )
-
-
-
-total_steps = training_cfg.N_epochs * len(train_data_loader)
-
-# 3. Instantiate the OneCycleLR scheduler
-scheduler = OneCycleLR(
-    optimizer,
-    max_lr=training_cfg.learning_rate,   # peak learning rate
-    total_steps=total_steps,             # total number of optimizer steps
-    pct_start=0.3,                       # fraction of cycle spent increasing LR
-    anneal_strategy='cos',              # cosine annealing (other option: 'linear')
-    div_factor=25.0,                     # initial lr = max_lr/div_factor
-    final_div_factor=1e4,                # final lr = initial_lr/final_div_factor
-    three_phase=False,                   # set True for 3-phase schedule
-    last_epoch=-1,                       # leave as default unless resuming
-)
+loss_fn.load_state_dict(loss_fn_params["state_dict"], strict= False)
+loss_fn.to(device)
 
 
 classifier.to(device)
@@ -93,39 +81,32 @@ chiral_embedding_model.to(device)
 
 metrics = build_metric_collection(N_classes).to(device=device)
 
-for epoch in range(1, training_cfg.N_epochs + 1):
 
-    train_loss = train_one_epoch(
-        chiral_embedding_model,
-        classifier,
-        train_data_loader,
-        loss_fn,
-        optimizer,
-        scheduler,
-        device,
+val_stats, model_output = evaluate(
+    chiral_embedding_model,
+    classifier,
+    dataloader,
+    metrics,
+    loss_fn,
+    device,
     )
 
-    val_stats = evaluate(
-        chiral_embedding_model,
-        classifier,
-        val_data_loader,
-        metrics,
-        loss_fn,
-        device,
-    )
-
-    print(f"\nEpoch {epoch}")
-    print(f"  train_loss         : {train_loss:.4f}")
-    for k, v in val_stats.items():
-        if k != "confmat":
-            print(f"  {k:18s}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
-    print("  confusion matrix:\n", val_stats["confmat"].numpy())
+for k, v in val_stats.items():
+    if k != "confmat":
+        print(f"  {k:18s}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
+print("  confusion matrix:\n", val_stats["confmat"].numpy())
     
-    wandb.log(
-        {
-            "epoch": epoch,
-            "train/loss": train_loss,
-            **{f"val/{k}": v for k, v in val_stats.items() if k != "confmat"},
-            "val/confmat": wandb_confmat(val_stats["confmat"]),
-        }
-    )
+from chiral_mols.evaluation.evaluation import plot_umap_components, compute_channel_stats
+
+
+#reference_fig, model_pred_fig = plot_umap_components(model_output.chiral_embedding, model_output.class_labels, model_output.model_logits, sample_size_class0=0)
+#
+#reference_fig.savefig("no_achiral_reference_umap.png")
+#model_pred_fig.savefig("no_achiral_model_umap.png")
+#
+
+figs = compute_channel_stats(model_output.chiral_embedding, model_output.class_labels)
+
+
+for figname, fig in figs.items():
+    fig.savefig(f"{figname}.png")

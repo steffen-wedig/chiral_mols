@@ -3,7 +3,16 @@ from e3nn.o3 import Irreps
 from mace.calculators import MACECalculator
 
 
+def get_mace_calculator_irrep_signature(mace_calculator: MACECalculator) -> Irreps:
+    signature = None
 
+    for products in mace_calculator.models[0].products: # type: ignore
+        if signature is None:
+            signature = Irreps(str(products.linear.__dict__["irreps_out"]))
+        else:
+            signature = signature + Irreps(str(products.linear.__dict__["irreps_out"]))
+
+    return signature
 
 def slices_to_index_list(slices, sequence_length):
     # Using a list comprehension to flatten the list of indices

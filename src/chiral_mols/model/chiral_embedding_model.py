@@ -10,6 +10,9 @@ from e3nn.o3 import Irreps
 from e3nn.nn import NormActivation, Gate
 
 
+
+
+
 class ChiGate(torch.nn.Module):
     """
     FiLM-style invariant→gate mapping.
@@ -37,21 +40,37 @@ class ChiralEmbeddingModel(torch.nn.Module):
     def __init__(
         self,
         input_irreps: Irreps,
-        pseudoscalar_irreps: Irreps,
-        output_embedding_dim,
+        pseudoscalar_dimension: Irreps,
+        chiral_embedding_dim : int,
         mean_inv_atomic_embedding,
         std_inv_atomic_embedding,
-        low_dim_equivariant: int
+        gated: bool = True,
+        equivariant_rms_norm: bool = True,
+        dtype = torch.float64
     ):
         super().__init__()
 
-        self.invariant_indices, self.invariant_irreps = get_invariant_indices(
-            input_irreps
-        )
 
+        self.dtype = dtype
+        self.gated = gated
+        self.equivariant_rms_norm = equivariant_rms_norm
+
+        self.input_irreps = Irreps(input_irreps)
+        print(self.input_irreps)
+        self.invariant_indices, self.invariant_irreps = get_invariant_indices(
+            self.input_irreps
+        )
         self.equivariant_irreps = get_equivariant_irreps(input_irreps)
-        print(self.equivariant_irreps)
-        self.pseudoscalar_irreps = pseudoscalar_irreps
+        self.pseudoscalar_irreps = Irreps(f"{pseudoscalar_dimension}x0o")
+
+
+
+        if mean_inv_atomic_embedding is None:
+            mean_inv_atomic_embedding = torch.zeros(self.invariant_irreps.dim, dtype = dtype)
+
+        if std_inv_atomic_embedding is None:
+            std_inv_atomic_embedding = torch.ones(self.invariant_irreps.dim, dtype = dtype)
+
 
         self.register_buffer(
             "mean_inv_atomic_embedding",
@@ -64,18 +83,18 @@ class ChiralEmbeddingModel(torch.nn.Module):
             persistent=True,
         )
         
-        self.eq_embedding_irrep= Irreps(f"{low_dim_equivariant}x1o")
+        self.eq_embedding_irrep= Irreps(f"{pseudoscalar_dimension}x1o")
 
         self.lin0 = o3.Linear(self.equivariant_irreps,  self.eq_embedding_irrep)
         self.lin1 = o3.Linear(self.equivariant_irreps,  self.eq_embedding_irrep)
         self.lin2 = o3.Linear(self.equivariant_irreps,  self.eq_embedding_irrep)
 
-        self.eq_norm = NormActivation(self.eq_embedding_irrep, torch.sigmoid )
+        #self.eq_norm = NormActivation(self.eq_embedding_irrep, torch.sigmoid )
 
         self.tp_cross = o3.TensorProduct(
              self.eq_embedding_irrep,
              self.eq_embedding_irrep,
-            o3.Irreps(f"{low_dim_equivariant}x1e"),
+            o3.Irreps(f"{pseudoscalar_dimension}x1e"),
             # single CG path, weights = CG only
             instructions=[(0, 0, 0, "uvu", True)],
             internal_weights=True,
@@ -95,14 +114,14 @@ class ChiralEmbeddingModel(torch.nn.Module):
         )
 
         self.rms_norm = RMSLayerNorm(self.equivariant_irreps.num_irreps)
-        self.ln = torch.nn.LayerNorm(output_embedding_dim, dtype=torch.float32)
+        self.ln = torch.nn.LayerNorm(pseudoscalar_dimension, dtype=dtype)
         #self.ps_layer_norm1 = torch.nn.LayerNorm(self.pseudoscalar_irreps.dim)
         #self.ps_layer_norm2 = torch.nn.LayerNorm(self.pseudoscalar_irreps.dim)
         #self.ps_layer_norm3 = torch.nn.LayerNorm(self.pseudoscalar_irreps.dim)
 
         self.chi_gate = ChiGate(inv_dim = self.invariant_irreps.dim, K = self.pseudoscalar_irreps.dim)
 
-#        self.linear_out = torch.nn.Linear(self.pseudoscalar_irreps.dim, output_embedding_dim)
+        self.linear_out = torch.nn.Linear(pseudoscalar_dimension, chiral_embedding_dim)
 
     def rescale_invariant(self, invariants):
 
@@ -110,7 +129,7 @@ class ChiralEmbeddingModel(torch.nn.Module):
             invariants - self.mean_inv_atomic_embedding
         ) / self.std_inv_atomic_embedding
 
-        invariants = invariants.float()
+        invariants = invariants
         return invariants
 
     def forward(self, atomic_embeddings):
@@ -121,7 +140,8 @@ class ChiralEmbeddingModel(torch.nn.Module):
 
         invariant_features = self.rescale_invariant(invariant_features)
 
-        equivariant_features = self.rms_norm(equivariant_features)
+        if self.equivariant_rms_norm:
+            equivariant_features = self.rms_norm(equivariant_features)
         
 
         x0 = self.lin0(equivariant_features)
@@ -129,9 +149,12 @@ class ChiralEmbeddingModel(torch.nn.Module):
         x1 = self.lin1(equivariant_features)
         x2 = self.lin2(equivariant_features)
         
-
+        #x0 = equivariant_features
+        #x1 = equivariant_features
+        #x2 = equivariant_features
+    
         cross = self.tp_cross(x0, x1)  # v₂ x v₃
-        chi = self.tp_dot(cross, x2)  # v₁ · (v₂ x v₃)
+        out = self.tp_dot(cross, x2)  # v₁ · (v₂ x v₃)
 
         #cross01 = self.tp_cross(x0, x1)
         #cross12 = self.tp_cross(x1, x2)
@@ -146,9 +169,10 @@ class ChiralEmbeddingModel(torch.nn.Module):
         #chi = torch.cat([chi0, chi1, chi2], dim=-1)
 
 
-        out = chi.to(torch.float32)
 
         out = self.ln(out)
-        out = self.chi_gate(invariant_features) * out
-        #out = self.linear_out(out)
+        if self.gated:
+            out = self.chi_gate(invariant_features) * out
+        out = self.linear_out(out)
+        out = out.to(torch.float32)
         return out

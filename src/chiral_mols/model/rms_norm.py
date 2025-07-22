@@ -4,17 +4,17 @@ import torch
 
 
 class RMSLayerNorm(nn.Module):
-    def __init__(self, num_channels: int, eps: float = 1e-6):
+    def __init__(self, num_irreps: int, eps: float = 1e-6):
         """
         RMS-style layer norm for equivariant (type-L) blocks.
 
         Args:
-          num_channels: number of irreducible blocks C
+          num_irreps: number of irreducible blocks C
           eps: small constant to avoid div/0
         """
         super().__init__()
         # one learnable scale per channel/block
-        self.gamma = nn.Parameter(torch.ones(num_channels, 1))
+        self.gamma = nn.Parameter(torch.ones(num_irreps, 1))
         self.eps = eps
 
     def forward(self, S_e: torch.Tensor) -> torch.Tensor:
@@ -35,7 +35,7 @@ class RMSLayerNorm(nn.Module):
 
         block_norms = torch.linalg.norm(S_e, dim=-1, keepdim=True)
 
-        # 2) compute RMS of those norms *across* the C channels:
+        # 2) compute RMS of those norms *across* the C irreps:
         #    shape: (..., 1, 1)
         rms = torch.sqrt(
             torch.mean(block_norms.pow(2), dim=-2, keepdim=True) + self.eps

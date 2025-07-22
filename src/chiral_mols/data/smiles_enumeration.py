@@ -18,7 +18,7 @@ def stream_ligand_smiles(tsv_file: str, batch_size: int = 10):
     """
     Generator yielding 'Ligand SMILES' values from a TSV file in streaming batches.
     """
-    # 1) Build a lazy plan that only reads the one column
+    # 1) Build a lazy plan (scan instead of read) that only reads the smiles column
     lazy_smiles = pl.scan_csv(tsv_file, separator="\t", has_header=True).select(
         "Ligand SMILES"
     )

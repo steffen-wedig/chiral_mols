@@ -56,6 +56,7 @@ class FocalLoss(nn.Module):
     def __init__(self, gamma: float = 2.0, alpha: torch.Tensor | None = None,
                  reduction: str = "mean"):
         super().__init__()
+
         self.gamma = gamma
         self.reduction = reduction
 
@@ -91,3 +92,16 @@ class FocalLoss(nn.Module):
             return focal_loss.sum()
         else:                      # 'none'
             return focal_loss
+        
+
+
+    def config(self):
+        return {
+            "gamma": float(self.gamma),
+            "reduction": self.reduction,
+            "alpha": None if self.alpha is None else self.alpha.cpu()
+        }
+
+    @classmethod
+    def from_config(cls, cfg):
+        return cls(**cfg)
