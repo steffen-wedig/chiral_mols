@@ -15,7 +15,13 @@ from chiral_mols.data.read_cmrt_data import read_smiles_from_file, batch_smiles
 MACE_PATH = "/share/snw30/projects/mace_model/MACE-OFF24_medium.model"
 TSV_FILE = "/share/snw30/projects/threedscriptor/3DMolecularDescriptors/data/raw_data/BindingDB_All.tsv"
 
+def cmrt_generator():
+    filename = "/share/snw30/projects/chiral_mols/dataset/raw_data/cmrt_smiles"
 
+    smiles_list = read_smiles_from_file(filename)
+    
+    smiles_generator = batch_smiles(smiles_list, 2500)
+    return smiles_generator
 
 
 def main():
@@ -23,17 +29,13 @@ def main():
     all_mols = []
     N_molecules = 30000
 
-    smiles_generator = stream_random_ligand_smiles_batches(
-            TSV_FILE, read_batch_size=2500, pool_size=25000, yield_batch_size=2500
-        )
+    #smiles_generator = stream_random_ligand_smiles_batches(
+    #        TSV_FILE, read_batch_size=5000, pool_size=75000, yield_batch_size=10000
+    #    )
+    #
     DATASET_DIR = "/share/snw30/projects/chiral_mols/dataset/cmrt/"
 
-    filename = "/share/snw30/projects/chiral_mols/dataset/raw_data/cmrt_smiles"
-
-    smiles_list = read_smiles_from_file(filename)
-    
-    smiles_generator = batch_smiles(smiles_list, 2500)
-
+    smiles_generator = cmrt_generator()
 
     seen_smiles = set()
     with tqdm(total=N_molecules) as pbar:
@@ -66,7 +68,7 @@ def main():
     all_mace_embeddings = get_mace_embeddings(atoms=all_atoms, mace_calc=mace_calc)
 
     dataset = PtrMoleculeDataset.from_dataset_list(
-        all_structure_ids, all_mace_embeddings, all_chirality_labels
+        all_structure_ids, all_mace_embeddings, all_chirality_labels, all_atoms
     )
 
     dataset.store_dataset(Path(DATASET_DIR))

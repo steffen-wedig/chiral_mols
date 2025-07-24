@@ -6,134 +6,167 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 
 # Speed up rendering of large point clouds
-mpl.rcParams['agg.path.chunksize'] = 10000
+mpl.rcParams["agg.path.chunksize"] = 10000
 
 
-def get_umap_components(
-    embeddings: Float[Tensor, "N UmapDim"]
-) -> np.ndarray:
-    """
-    Compute UMAP projections for the input embeddings.
-
-    Args:
-        embeddings: Tensor or array of shape (N, EmbDim).
-
-    Returns:
-        A NumPy array of shape (N, 2) with UMAP components.
-    """
-    umap_calc = umap.UMAP()
-    umap_components = umap_calc.fit_transform(
-        embeddings, force_all_finite=True
-    )
-    return umap_components
+import numpy as np
+import umap
+import matplotlib.pyplot as plt
 
 
-def plot_umap_components(
-    chiral_embeddings: Float[Tensor, "N UmapDim"],
-    class_labels,
-    logits,
-    sample_size_class0: int = None,
-    rasterize: bool = True
-):
-    """
-    Generate two UMAP scatter plots where all points from classes 1 & 2 are shown,
-    and optionally only a random subset of class 0 is embedded and plotted.
+class UMAPPlotter:
+    def __init__(self, embeddings, labels, sample_size_class0=None, random_state=None):
+        """
+        Initialize UMAPPlotter by computing UMAP components once.
 
-    Args:
-        chiral_embeddings: Tensor or array of shape (N, EmbDim).
-        class_labels: Array-like of length N with true integer labels.
-        logits: Tensor or array of shape (N, C), raw model outputs.
-        sample_size_class0: Number of points to randomly sample from class 0 before UMAP.
-                            If None or >= count of class 0, use all class 0 points.
-        rasterize: Whether to rasterize the scatter layers for faster rendering.
+        Args:
+            embeddings: array-like of shape (N, EmbDim), or PyTorch Tensor.
+            labels: array-like of shape (N,) with integer labels.
+            sample_size_class0: int or None. Number of class 0 samples to use.
+            random_state: int or RandomState for reproducibility.
+        """
+        # Convert to numpy arrays
+        self.emb_arr = (
+            embeddings.numpy()
+            if hasattr(embeddings, "numpy")
+            else np.asarray(embeddings)
+        )
+        self.labels = labels.numpy() if hasattr(labels, "numpy") else np.asarray(labels)
+        self.sample_size_class0 = sample_size_class0
+        self.random_state = random_state
 
-    Returns:
-        Tuple of (reference_fig, prediction_fig).
-    """
-    # Convert labels and logits to numpy arrays
-    if hasattr(class_labels, 'detach'):
-        labels = class_labels.detach().cpu().numpy()
-    else:
-        labels = np.asarray(class_labels)
-    if hasattr(logits, 'argmax'):
-        preds = logits.argmax(dim=1).detach().cpu().numpy()
-    else:
-        preds = np.argmax(np.asarray(logits), axis=1)
+        # Determine which indices to embed
+        self.embed_idx = self._get_subsampled_indices()
+        if self.random_state is not None:
+            rng = np.random.RandomState(self.random_state)
+            rng.shuffle(self.embed_idx)
+        else:
+            np.random.shuffle(self.embed_idx)
 
-    # Identify indices for each class
-    idx_class0 = np.where(labels == 0)[0]
-    idx_class1_2 = np.where((labels == 1) | (labels == 2))[0]
+        # Subset embeddings
+        self.emb_sel = self.emb_arr[self.embed_idx]
 
-    # Sample from class 0 indices if requested
-    if sample_size_class0 is not None and sample_size_class0 < len(idx_class0):
-        sampled0 = np.random.choice(idx_class0, sample_size_class0, replace=False)
-    else:
-        sampled0 = idx_class0
+        # Compute UMAP only once
+        self.umap_model = umap.UMAP()
+        self.components = self.umap_model.fit_transform(
+            self.emb_sel, force_all_finite=True
+        )
 
-    # Combine indices for embedding
-    embed_idx = np.concatenate([sampled0, idx_class1_2])
-    # Shuffle to avoid ordering artifacts
-    np.random.shuffle(embed_idx)
+    def _get_subsampled_indices(self):
+        """
+        Subsample class 0 if requested, always include classes 1 & 2.
+        """
+        idx0 = np.where(self.labels == 0)[0]
+        idx1_2 = np.where((self.labels == 1) | (self.labels == 2))[0]
+        if self.sample_size_class0 is not None and self.sample_size_class0 < len(idx0):
+            sampled0 = np.random.choice(idx0, self.sample_size_class0, replace=False)
+        else:
+            sampled0 = idx0
+        return np.concatenate([sampled0, idx1_2])
 
-    # Subset the embeddings, labels, and preds
-    # Handle torch Tensor input for embeddings
-    if hasattr(chiral_embeddings, 'detach'):
-        emb_arr = chiral_embeddings.detach().cpu().numpy()
-    else:
-        emb_arr = np.asarray(chiral_embeddings)
-    emb_sel = emb_arr[embed_idx]
-    labels_sel = labels[embed_idx]
-    preds_sel = preds[embed_idx]
+    def plot(
+        self,
+        color,
+        color_name,
+        class_names,
+        rasterize=True,
+        s=5,
+        alpha=1,
+        sample=None,
+        random_state=None,
+    ):
+        """
+        Plot the precomputed UMAP with a given color mapping, optionally with random subsampling.
 
-    # Compute UMAP on subset
-    comps_sel = get_umap_components(emb_sel)
+        Args:
+            color: array-like of length N with values to color points.
+            color_name: str for legend title.
+            class_names: dict mapping class integer to display name.
+            rasterize: bool to rasterize for performance.
+            s: marker size.
+            alpha: float for transparency.
+            sample: None | float in (0,1] | int >= 1
+                - None: use all points
+                - float: fraction of points to plot
+                - int: maximum number of points to plot
+            random_state: int or None
+                Seed for reproducible sampling.
 
-    # Plot True Labels
-    reference_fig, ax1 = plt.subplots()
-    sc1 = ax1.scatter(
-        comps_sel[:, 0], comps_sel[:, 1],
-        c=labels_sel,
-        cmap='tab10',
-        s=1,
-        alpha=0.8,
-        edgecolors='none',
-        rasterized=rasterize
-    )
-    ax1.legend(*sc1.legend_elements(), title="True Classes", loc='upper right', markerscale=6)
-    ax1.set_title("UMAP: True Labels (all class 1 & 2, sampled class 0 before embedding)")
-    ax1.set_xlabel("UMAP 1")
-    ax1.set_ylabel("UMAP 2")
+        Returns:
+            matplotlib.figure.Figure
+        """
 
-    # Plot Predicted Labels
-    prediction_fig, ax2 = plt.subplots()
-    sc2 = ax2.scatter(
-        comps_sel[:, 0], comps_sel[:, 1],
-        c=preds_sel,
-        cmap='tab10',
-        s=1,
-        alpha=0.8,
-        edgecolors='none',
-        rasterized=rasterize
-    )
-    ax2.legend(*sc2.legend_elements(), title="Predicted Classes", loc='upper right', markerscale=6)
-    ax2.set_title("UMAP: Predicted Labels (all class 1 & 2, sampled class 0 before embedding)")
-    ax2.set_xlabel("UMAP 1")
-    ax2.set_ylabel("UMAP 2")
+        # Extract colors for selected indices
+        color_arr = color.numpy() if hasattr(color, "numpy") else np.asarray(color)
+        color_sel = color_arr[self.embed_idx]
+        print(color_name)
+        print(np.unique(color_sel))
+        # Components already correspond to embed_idx
+        comps = self.components
+        n = comps.shape[0]
 
+        # --- Subsample indices if requested ---
+        if sample is not None and n > 0:
+            rng = np.random.default_rng(random_state)
+            if isinstance(sample, float):
+                if not (0 < sample <= 1):
+                    raise ValueError("When 'sample' is a float it must be in (0, 1].")
+                k = max(1, int(np.ceil(n * sample)))
+            else:  # treat as int
+                k = min(int(sample), n)
+            idx = rng.choice(n, size=k, replace=False)
+            comps = comps[idx]
+            color_sel = color_sel[idx]
 
-    return reference_fig, prediction_fig
+        fig, ax = plt.subplots()
+        sc = ax.scatter(
+            comps[:, 0],
+            comps[:, 1],
+            c=color_sel,
+            marker=".",
+            edgecolors="none",  # absolutely no edge
+            linewidths=0,  # zero line width
+            s=s,
+            cmap="tab20",
+            alpha=alpha,
+            rasterized=rasterize,
+        )
 
+        # Build legend handles with labels from the *plotted* classes
+        unique_vals = np.unique(color_sel)
+        handles = []
+        vmax = unique_vals.max() if unique_vals.size and unique_vals.max() > 0 else 1
+        cmap_obj = plt.cm.get_cmap("tab20")
+        for val in unique_vals:
+            label = class_names.get(int(val), str(val))
+            handles.append(
+                plt.Line2D(
+                    [],
+                    [],
+                    marker="o",
+                    linestyle="",
+                    markersize=6,
+                    markerfacecolor=cmap_obj(val / vmax),
+                    markeredgecolor="none",
+                    label=label,
+                )
+            )
 
+        ax.legend(handles=handles, title=color_name, loc="upper right")
+        ax.set_title(f"UMAP colored by {color_name}")
+        ax.set_xlabel("UMAP 1")
+        ax.set_ylabel("UMAP 2")
+        return fig
 
 
 def get_l2_histogram(chiral_embeddings, class_labels):
 
     hist = plt.figure()
-    labels = {0 : "Achiral", 1: "R", 2: "S"}
+    labels = {0: "Achiral", 1: "R", 2: "S", 3: "Error"}
 
     for i, c in enumerate(np.unique(class_labels)):
         emb_c = chiral_embeddings[class_labels == c]
-        l2_norms = torch.linalg.norm(emb_c, dim= 1).numpy()
+        l2_norms = torch.linalg.norm(emb_c, dim=1).numpy()
         plt.hist(l2_norms, density=True, label=labels[c])
 
     plt.title(f"L2 Norm of chiral embeddings")
@@ -141,28 +174,29 @@ def get_l2_histogram(chiral_embeddings, class_labels):
     plt.ylabel("Relative Frequency")
     plt.legend()
 
-
     return hist
+
 
 def get_std_bar_chart(std_per_channel, channel):
 
     x = np.arange(len(std_per_channel))
     bar_chart = plt.figure()
-    plt.bar(x, height= std_per_channel)
+    plt.bar(x, height=std_per_channel)
 
     plt.title(f"Std per channel Class {channel}")
     plt.xlabel("Chiral Embedding Channel (by class)")
 
     return bar_chart
 
+
 def get_boxplot(chiral_embeddings, class_labels):
 
     n_dim = chiral_embeddings.shape[-1]
-    fig = plt.figure(figsize=(10,5))
+    fig = plt.figure(figsize=(10, 5))
     plt.title("Boxplot of channelwise distributions of chiral embeddings")
     off = np.linspace(-0.3, 0.3, len(np.unique(class_labels)))
     for i, c in enumerate(np.unique(class_labels)):
-        plt.vlines(x = np.arange(1.5,24.5,1), ymin = -5, ymax = 5,colors="k")
+        plt.vlines(x=np.arange(1.5, 24.5, 1), ymin=-5, ymax=5, colors="k")
         emb_c = chiral_embeddings[class_labels == c]
         # use positions shifted by 'off' to avoid overplot
         pos = np.arange(1, n_dim + 1) + off[i]
@@ -175,77 +209,62 @@ def get_boxplot(chiral_embeddings, class_labels):
             boxprops=dict(alpha=0.3),
         )
     plt.xlabel("Chiral Embedding Channel (by class)")
-    plt.ylim([-5,5])
-    tick_labels = np.arange(1,n_dim+1)
-    plt.xticks(ticks = tick_labels, labels = tick_labels, rotation=90)
+    plt.ylim([-5, 5])
+    tick_labels = np.arange(1, n_dim + 1)
+    plt.xticks(ticks=tick_labels, labels=tick_labels, rotation=90)
 
     return fig
 
 
 import torch
 
+
 def compute_channel_stats(chiral_embeddings, class_labels):
 
-
-    
     figs = {}
-    
-    for c in [0,1,2]:
-        
+
+    for c in [0, 1, 2]:
+
         class_embeddings = chiral_embeddings[class_labels == c]
 
-        std_per_channel = torch.std(class_embeddings, dim= 0).numpy()
+        std_per_channel = torch.std(class_embeddings, dim=0).numpy()
         figs[f"std_bars_per_channel_{c}"] = get_std_bar_chart(std_per_channel, c)
-        
+
     figs[f"l2_norm_hist"] = get_l2_histogram(chiral_embeddings, class_labels)
     figs[f"boxplot"] = get_boxplot(chiral_embeddings, class_labels)
-
 
     return figs
 
 
+def get_misclassified_structure_ids(class_labels, logits, atomwise_structure_ids):
 
+    # ensure numpy arrays
+    class_labels = np.asarray(class_labels)
+    logits = np.asarray(logits)
+    atomwise_structure_ids = np.asarray(atomwise_structure_ids)
 
+    # model predictions
+    preds = np.argmax(logits, axis=1)
 
+    # mask: anything non-zero (chiral) predicted as zero (achiral)
+    mis_chiral_as_achiral_mask = (preds == 0) & (class_labels != 0)
 
+    mis_achircal_as_chiral_mask = (preds != 0) & (class_labels == 0)
 
+    # mask: R↔S swaps
+    confused_r_s_mask = ((preds == 1) & (class_labels == 2)) | (
+        (preds == 2) & (class_labels == 1)
+    )
 
+    # pull out the IDs
+    mis_chiral_as_achiral_ids = atomwise_structure_ids[mis_chiral_as_achiral_mask]
 
+    mis_achircal_as_chiral_ids = atomwise_structure_ids[mis_achircal_as_chiral_mask]
+    confused_r_s_ids = atomwise_structure_ids[confused_r_s_mask]
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    std_channel_class_fig = plt.figure(figsize=(figsize[0], figsize[1] * 0.6))
-    off = np.linspace(-0.3, 0.3, len(np.unique(class_labels)))
-    for i, c in enumerate(np.unique(class_labels)):
-        emb_c = emb_plot[class_labels == c]
-        # use positions shifted by 'off' to avoid overplot
-        pos = np.arange(1, n_dim + 1) + off[i]
-        plt.boxplot(
-            emb_c,
-            positions=pos,
-            widths=0.2,
-            showfliers=False,
-            patch_artist=True,
-            boxprops=dict(alpha=0.3),
-        )
-    plt.title("Descriptor distribution per channel by class")
-    plt.xlabel("Channel index")
-    plt.ylabel("Descriptor value")
-    plt.tight_layout()
-
-    return total_l2, class_l2 , std_channel_fig, std_channel_class_fig
+    # return as lists
+    return (
+        mis_chiral_as_achiral_ids.tolist(),
+        mis_achircal_as_chiral_ids.tolist(),
+        confused_r_s_ids.tolist(),
+    )

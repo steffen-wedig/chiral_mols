@@ -23,6 +23,8 @@ class MolecularEmbeddingModel(torch.nn.Module):
 
         descriptors = torch.from_numpy(self.mace_calc.get_descriptors(ase_atoms, invariants_only= False))
 
+        
+        descriptors = descriptors.to(dtype=self.chiral_embedding_model.dtype)
         pseudoscalar_embeddings = self.chiral_embedding_model(descriptors)
 
         return pseudoscalar_embeddings

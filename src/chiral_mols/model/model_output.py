@@ -7,3 +7,4 @@ class EvalOutput:
     chiral_embedding: torch.Tensor
     model_logits: torch.Tensor 
     class_labels: torch.Tensor
+    predictions: torch.Tensor

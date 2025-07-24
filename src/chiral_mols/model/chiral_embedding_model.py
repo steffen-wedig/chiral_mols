@@ -23,9 +23,9 @@ class ChiGate(torch.nn.Module):
         if hidden is None:
             hidden = 2* inv_dim
         self.net = torch.nn.Sequential(
-            torch.nn.Linear(inv_dim, hidden),
+            torch.nn.Linear(inv_dim, hidden,bias=None),
             torch.nn.SiLU(),
-            torch.nn.Linear(hidden, K)
+            torch.nn.Linear(hidden, K, bias= None)
         )
         self.act = torch.nn.Sigmoid()           # keep outputs positive
 
@@ -33,6 +33,27 @@ class ChiGate(torch.nn.Module):
         gate = self.act(self.net(inv))    # (..., K)
         return gate
 
+
+
+class OddMLP(torch.nn.Module):
+
+
+    def __init__(self, pseudoscalar_dim : int, hidden_dim : int, chiral_embedding_dim : int):
+
+        super().__init__()
+
+        self.pseudoscalar_dim = pseudoscalar_dim
+        self.hidden_dim = hidden_dim
+        self.chiral_embedding_dim = chiral_embedding_dim
+
+        self.model = torch.nn.Sequential(
+            torch.nn.Linear(pseudoscalar_dim, hidden_dim, bias = False),
+            torch.nn.Tanh(),
+            torch.nn.Linear(hidden_dim, chiral_embedding_dim, bias = False),
+        )
+
+    def forward(self, x):
+        return self.model(x)
 
 
 class ChiralEmbeddingModel(torch.nn.Module):
@@ -75,8 +96,7 @@ class ChiralEmbeddingModel(torch.nn.Module):
         self.register_buffer(
             "mean_inv_atomic_embedding",
             mean_inv_atomic_embedding,
-            persistent=True,
-        )
+            persistent=True)
         self.register_buffer(
             "std_inv_atomic_embedding",
             std_inv_atomic_embedding,
@@ -114,14 +134,22 @@ class ChiralEmbeddingModel(torch.nn.Module):
         )
 
         self.rms_norm = RMSLayerNorm(self.equivariant_irreps.num_irreps)
-        self.ln = torch.nn.LayerNorm(pseudoscalar_dimension, dtype=dtype)
+        self.ln = torch.nn.LayerNorm(pseudoscalar_dimension, dtype=dtype, bias = False)
         #self.ps_layer_norm1 = torch.nn.LayerNorm(self.pseudoscalar_irreps.dim)
         #self.ps_layer_norm2 = torch.nn.LayerNorm(self.pseudoscalar_irreps.dim)
         #self.ps_layer_norm3 = torch.nn.LayerNorm(self.pseudoscalar_irreps.dim)
 
         self.chi_gate = ChiGate(inv_dim = self.invariant_irreps.dim, K = self.pseudoscalar_irreps.dim)
 
-        self.linear_out = torch.nn.Linear(pseudoscalar_dimension, chiral_embedding_dim)
+        self.linear_out = torch.nn.Linear(pseudoscalar_dimension, chiral_embedding_dim, bias = False)
+
+
+        #self.mlp_out = OddMLP(
+        #    pseudoscalar_dim = pseudoscalar_dimension,
+        #    hidden_dim = pseudoscalar_dimension * 2,
+        #    chiral_embedding_dim = chiral_embedding_dim
+        #)
+
 
     def rescale_invariant(self, invariants):
 
@@ -156,23 +184,13 @@ class ChiralEmbeddingModel(torch.nn.Module):
         cross = self.tp_cross(x0, x1)  # v₂ x v₃
         out = self.tp_dot(cross, x2)  # v₁ · (v₂ x v₃)
 
-        #cross01 = self.tp_cross(x0, x1)
-        #cross12 = self.tp_cross(x1, x2)
-        #cross20 = self.tp_cross(x2, x0)
-#
-        #chi0 = self.ps_layer_norm1(self.tp_dot(cross01, x2))
-        #chi1 = self.ps_layer_norm1(self.tp_dot(cross12, x0))
-        #chi2 = self.ps_layer_norm1(self.tp_dot(cross20, x1))
-
-
-
-        #chi = torch.cat([chi0, chi1, chi2], dim=-1)
-
-
 
         out = self.ln(out)
+
         if self.gated:
             out = self.chi_gate(invariant_features) * out
+
         out = self.linear_out(out)
+        #out = self.mlp_out(out)
         out = out.to(torch.float32)
         return out

@@ -11,7 +11,7 @@ from chiral_mols.data.ptr_dataset import PtrMoleculeDataset
 from chiral_mols.training.dataset_splitting import DatasetSplitter
 from torch.utils.data import DataLoader, Subset
 from chiral_mols.training.training_config import TrainConfig
-from chiral_mols.data.sample import ptr_collate_padding, concat_collate
+from chiral_mols.data.sample import concat_collate
 from chiral_mols.training.embedding_normalization import get_mean_std_invariant_indices
 from pathlib import Path
 from chiral_mols.model.chiral_embedding_model import ChiralEmbeddingModel
@@ -19,6 +19,7 @@ from chiral_mols.model.classifier import ChiralityClassifier
 from torch.optim import AdamW
 from chiral_mols.training.evaluation import build_metric_collection, wandb_confmat
 
+from time import time
 
 from chiral_mols.training.training import (
     train_one_epoch,
@@ -40,7 +41,7 @@ torch.manual_seed(0)
 training_data_dir = make_training_dir(run_name)
 
 
-dataset_dir = Path("/share/snw30/projects/chiral_mols/dataset/chiral_atoms")
+dataset_dir = Path("/share/snw30/projects/chiral_mols/dataset/chiral_atoms_120k")
 training_cfg = TrainConfig(batch_size=256, learning_rate=8e-4, N_epochs=50)
 N_classes = 3
 
@@ -70,15 +71,25 @@ train_idx, val_idx = dataset_splitting.random_split_by_molecule(
 train_data = Subset(dataset, train_idx)
 val_data = Subset(dataset, val_idx)
 
+
 train_data_loader = DataLoader(
     train_data,
     batch_size=training_cfg.batch_size,
     collate_fn=concat_collate,
     shuffle=True,
     drop_last=True,
+    num_workers=8,  # spin up worker processes
+    pin_memory=True,  # speed up host→GPU copies
+    persistent_workers=True,  # keep workers alive across epochs
 )
+
 val_data_loader = DataLoader(
-    val_data, batch_size=training_cfg.batch_size, collate_fn=concat_collate
+    val_data,
+    batch_size=training_cfg.batch_size,
+    collate_fn=concat_collate,
+    num_workers=4,
+    pin_memory=True,
+    persistent_workers=True,
 )
 
 mean_inv, std_inv = get_mean_std_invariant_indices(
@@ -88,7 +99,7 @@ mean_inv, std_inv = get_mean_std_invariant_indices(
 device = "cuda"
 
 chiral_embedding_model = ChiralEmbeddingModel(
-    **chiral_embedding_model_config.model_dump(exclude_none= True),
+    **chiral_embedding_model_config.model_dump(exclude_none=True),
     mean_inv_atomic_embedding=mean_inv,
     std_inv_atomic_embedding=std_inv,
     dtype=torch.float32,
@@ -148,20 +159,23 @@ pydyaml.to_yaml_file(
 )
 
 
-torch.save({
-    "state_dict": loss_fn.state_dict(), 
-    "gamma" : loss_fn.gamma,  # buffers: gamma, alpha, ...
-    "reduction": loss_fn.reduction,       # plain attribute, not in state_dict
-}, f"{training_data_dir}/focal_loss_state.pth")
-
-
+torch.save(
+    {
+        "state_dict": loss_fn.state_dict(),
+        "gamma": loss_fn.gamma,  # buffers: gamma, alpha, ...
+        "reduction": loss_fn.reduction,  # plain attribute, not in state_dict
+    },
+    f"{training_data_dir}/focal_loss_state.pth",
+)
 
 
 best_val_loss = torch.inf
 metrics = build_metric_collection(N_classes).to(device=device)
 
-for epoch in range(1, training_cfg.N_epochs + 1):
 
+
+for epoch in range(1, training_cfg.N_epochs + 1):
+    start_time = time()
     train_loss = train_one_epoch(
         chiral_embedding_model,
         classifier,
@@ -171,7 +185,9 @@ for epoch in range(1, training_cfg.N_epochs + 1):
         scheduler,
         device,
     )
+    endtime = time()
 
+    print(f"{epoch} : {endtime-start_time} s ")
     val_stats, _ = evaluate(
         chiral_embedding_model,
         classifier,
@@ -207,7 +223,3 @@ for epoch in range(1, training_cfg.N_epochs + 1):
 
         torch.save(classifier.state_dict(), f"{training_data_dir}/classifier.pth")
         print(f" Epoch {epoch}: New best model saved.")
-
-
-
-

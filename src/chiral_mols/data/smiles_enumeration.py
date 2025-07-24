@@ -84,45 +84,49 @@ def get_chiral_smiles(smiles : list[str]):
     out = []
 
     for smi in smiles:
-
-        mol = Chem.MolFromSmiles(smi)
-
-        if mol is None or mol.GetNumAtoms() < 3:
-            continue
-        if any(a.GetSymbol() not in MACE_OFF_ELEMENTS for a in mol.GetAtoms()):
-            continue
         try:
-            mol2 = Chem.AddHs(mol)
-        except:
-            continue
-        if mol2.GetNumAtoms() > 47:
-            continue
+
+            mol = Chem.MolFromSmiles(smi)
+
+            if mol is None or mol.GetNumAtoms() < 3:
+                continue
+            if any(a.GetSymbol() not in MACE_OFF_ELEMENTS for a in mol.GetAtoms()):
+                continue
+            try:
+                mol2 = Chem.AddHs(mol)
+            except:
+                continue
+            if mol2.GetNumAtoms() > 47:
+                continue
 
 
-        if len(Chem.GetMolFrags(mol, asMols=True)) > 1:
-            continue
+            if len(Chem.GetMolFrags(mol, asMols=True)) > 1:
+                continue
 
-        if any(
-            a.GetNumRadicalElectrons() != 0
-            or a.GetIsotope() != 0
-            or a.GetFormalCharge() != 0
-            for a in mol2.GetAtoms()
-        ):
+            if any(
+                a.GetNumRadicalElectrons() != 0
+                or a.GetIsotope() != 0
+                or a.GetFormalCharge() != 0
+                for a in mol2.GetAtoms()
+            ):
+                continue
+            
+            # eject any E/Z stereo (potential or explicit)
+            if has_any_ez_stereo(mol):
+                continue
+            
+            Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+            centers = Chem.FindMolChiralCenters(
+                mol,
+                includeUnassigned=True,
+                useLegacyImplementation=False
+            )
+            if len(centers) == 1:
+                # produce a canonical isomeric SMILES
+                out.append(Chem.MolToSmiles(mol, isomericSmiles=True))
+        except Exception as e:
+            print(f"Filtering Error for smiles {smi}: {e}")
             continue
-        
-        # eject any E/Z stereo (potential or explicit)
-        if has_any_ez_stereo(mol):
-            continue
-        
-        Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
-        centers = Chem.FindMolChiralCenters(
-            mol,
-            includeUnassigned=True,
-            useLegacyImplementation=False
-        )
-        if len(centers) == 1:
-            # produce a canonical isomeric SMILES
-            out.append(Chem.MolToSmiles(mol, isomericSmiles=True))
 
     return out
 
