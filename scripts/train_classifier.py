@@ -14,7 +14,8 @@ from chiral_mols.training.training_config import TrainConfig
 from chiral_mols.data.sample import concat_collate
 from chiral_mols.training.embedding_normalization import get_mean_std_invariant_indices
 from pathlib import Path
-from chiral_mols.model.chiral_embedding_model import ChiralEmbeddingModel
+from threedscriptors.model.preprocessing.atomic_descriptor_preprocessor import AtomicDescriptorPreprocessor
+
 from chiral_mols.model.classifier import ChiralityClassifier
 from torch.optim import AdamW
 from chiral_mols.training.evaluation import build_metric_collection, wandb_confmat
@@ -29,10 +30,8 @@ from chiral_mols.training.training import (
 )
 from chiral_mols.training.loss import get_class_weights, FocalLoss
 from torch.optim.lr_scheduler import OneCycleLR
-from chiral_mols.model.configuration import (
-    ChiralEmbeddingConfig,
-    ChiralityClassifierConfig,
-)
+from chiral_mols.model.configuration import  ChiralityClassifierConfig
+from threedscriptors.configuration.architecture_config import EmbeddingPreprocessConfig
 import wandb
 import pydantic_yaml as pydyaml
 
@@ -41,29 +40,35 @@ torch.manual_seed(0)
 training_data_dir = make_training_dir(run_name)
 
 
-dataset_dir = Path("/share/snw30/projects/chiral_mols/dataset/chiral_atoms_120k")
+dataset_dir = Path("/share/snw30/projects/chiral_mols/dataset/cmrt")
 training_cfg = TrainConfig(batch_size=256, learning_rate=8e-4, N_epochs=50)
 N_classes = 3
 
 
-chiral_embedding_model_config = ChiralEmbeddingConfig(
+chiral_embedding_model_config = EmbeddingPreprocessConfig(
     input_irreps="128x0e+128x1o+128x0e",
-    pseudoscalar_dimension=64,
-    chiral_embedding_dim=24,
-    gated=True,
-    equivariant_rms_norm=True,
+    pseudoscalar_dimension=64, chiral_embedding_dimension=25,
+    reload_state_dict=None, gated=True, pseudoscalars=True,
+    equivariant_rms_normalization=True
 )
 
 classifier_config = ChiralityClassifierConfig(
-    chiral_embedding_dim=chiral_embedding_model_config.chiral_embedding_dim,
+    chiral_embedding_dim=chiral_embedding_model_config.chiral_embedding_dimension,
     hidden_dim=256,
     n_classes=N_classes,
     dropout=0.3,
 )
 
 print("Start loading the dataset")
-dataset = PtrMoleculeDataset.reload_dataset_from_dir(dataset_dir)
+dataset = PtrMoleculeDataset.reload_dataset_from_dir(dataset_dir, reload_atoms=True)
 print("Loaded the dataset")
+
+# Remove all hydrogens?
+
+dataset = dataset.drop_hydrogens()
+
+
+
 dataset_splitting = DatasetSplitter(dataset.structure_ids)
 train_idx, val_idx = dataset_splitting.random_split_by_molecule(
     train_val_ratios=[0.7, 0.3]
@@ -96,15 +101,12 @@ mean_inv, std_inv = get_mean_std_invariant_indices(
     train_data.dataset.embeddings, chiral_embedding_model_config.input_irreps
 )
 
+
 device = "cuda"
 
-chiral_embedding_model = ChiralEmbeddingModel(
-    **chiral_embedding_model_config.model_dump(exclude_none=True),
-    mean_inv_atomic_embedding=mean_inv,
-    std_inv_atomic_embedding=std_inv,
-    dtype=torch.float32,
-)
+chiral_embedding_model = AtomicDescriptorPreprocessor(chiral_embedding_model_config)
 
+chiral_embedding_model.invariant_normalization.set_stats(mean= mean_inv, std=std_inv)
 
 classifier = ChiralityClassifier(**classifier_config.model_dump(exclude_none=True))
 

@@ -27,4 +27,4 @@ def concat_collate(batch: Sequence[Sample]) -> Sample:
     lbl = torch.cat([s.chirality_labels for s in batch], dim=0)  # (N_total,)
     structure_ids = torch.cat([s.structure_id for s in batch], dim=0)  # (N_total,)
     
-    return Sample(embeddings=emb, chirality_labels=lbl, structure_id=structure_ids)
+    return Sample(embeddings=emb.unsqueeze(dim = 0), chirality_labels=lbl, structure_id=structure_ids)

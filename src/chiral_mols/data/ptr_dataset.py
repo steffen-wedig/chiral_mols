@@ -7,6 +7,8 @@ from chiral_mols.data.structure_id import StructureID
 from pathlib import Path
 from ase import Atoms
 from rdkit.Chem import CanonSmiles
+from typing import Iterable
+
 
 class PtrMoleculeDataset(Dataset):
     """Stores all atoms in flat tensors and a *ptr* array marking boundaries."""
@@ -234,4 +236,30 @@ class PtrMoleculeDataset(Dataset):
             positions,
             atomic_numbers,
             smiles=smiles,
+        )
+
+    def drop_hydrogens(self) -> "PtrMoleculeDataset":
+        assert self.atomic_numbers is not None, "Need atomic_numbers to drop H"
+
+        keep_mask = self.atomic_numbers != 1
+        idx_keep = keep_mask.nonzero(as_tuple=False).squeeze(1)
+
+        # per‑molecule kept counts (all > 0 per your assumption)
+        mol_lengths = (self.ptr[1:] - self.ptr[:-1]).tolist()
+        kept_counts = [m.sum().item() for m in keep_mask.split(mol_lengths)]
+
+        new_ptr = torch.empty_like(self.ptr)
+        new_ptr[0] = 0
+        new_ptr[1:] = torch.as_tensor(
+            kept_counts, dtype=self.ptr.dtype, device=self.ptr.device
+        ).cumsum(0)
+
+        return PtrMoleculeDataset(
+            structure_ids=self.structure_ids,
+            embeddings=self.embeddings[idx_keep],
+            labels=self.labels[idx_keep],
+            ptr=new_ptr,
+            positions=self.positions[idx_keep] if self.positions is not None else None,
+            atomic_numbers=self.atomic_numbers[idx_keep],
+            smiles=self.smiles,
         )

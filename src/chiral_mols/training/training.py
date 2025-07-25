@@ -3,7 +3,9 @@ from torch import nn
 from torch.optim import AdamW
 from torchmetrics import MetricCollection
 from chiral_mols.model.model_output import EvalOutput
-from chiral_mols.model.chiral_embedding_model import ChiralEmbeddingModel
+from threedscriptors.model.preprocessing.atomic_descriptor_preprocessor import AtomicDescriptorPreprocessor
+
+from threedscriptors.data_handling.sample import PreprocessedSample
 from chiral_mols.model.classifier import ChiralityClassifier
 from pathlib import Path
 from datetime import datetime
@@ -43,7 +45,7 @@ def make_training_dir(run_name: str) -> Path:
 
 
 def train_one_epoch(
-    embedding_model: ChiralEmbeddingModel,
+    embedding_model: AtomicDescriptorPreprocessor,
     classifier: ChiralityClassifier,
     dataloader,
     loss_fn: nn.Module,
@@ -61,7 +63,10 @@ def train_one_epoch(
         batch = batch.to_(device=device)
 
         optimizer.zero_grad()
-        logits = classifier(embedding_model(batch.embeddings))
+        chiral_embeddings = embedding_model(embeddings = batch.embeddings).chiral_embeddings.squeeze()
+        
+
+        logits = classifier(chiral_embeddings)
         loss = loss_fn(logits, batch.chirality_labels)
 
         loss.backward()
@@ -76,7 +81,7 @@ def train_one_epoch(
 
 @torch.no_grad()
 def evaluate(
-    embedding_model: ChiralEmbeddingModel,
+    embedding_model: AtomicDescriptorPreprocessor,
     classifier: ChiralityClassifier,
     dataloader,
     metrics: MetricCollection,
@@ -97,7 +102,8 @@ def evaluate(
 
     for batch in dataloader:
         batch = batch.to_(device=device)
-        batch_chiral_embeddings = embedding_model(batch.embeddings)
+        batch_chiral_embeddings = embedding_model(batch.embeddings).chiral_embeddings.squeeze()
+
         logits = classifier(batch_chiral_embeddings)
         probs = torch.softmax(logits, dim=1)
 
